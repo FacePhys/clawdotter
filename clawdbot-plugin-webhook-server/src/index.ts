@@ -230,8 +230,8 @@ interface ChatRpcResult {
 }
 
 /**
- * Call Clawdbot's chat.send RPC method via HTTP
- * Uses the Gateway's HTTP API on localhost:18789
+ * Call Clawdbot's agent via CLI command
+ * Uses the clawdbot CLI to send a message and get a response
  */
 async function callChatRpc(
     api: ClawdbotPluginApi,
@@ -241,37 +241,47 @@ async function callChatRpc(
         metadata?: Record<string, unknown>;
     }
 ): Promise<ChatRpcResult> {
-    const gatewayPort = 18789; // Default Clawdbot Gateway port
-    const rpcUrl = `http://127.0.0.1:${gatewayPort}/rpc`;
+    const { exec } = require('child_process');
+    const { promisify } = require('util');
+    const execAsync = promisify(exec);
 
     try {
-        const response = await axios.post(rpcUrl, {
-            jsonrpc: '2.0',
-            id: Date.now(),
-            method: 'chat.send',
-            params: {
-                message: options.message,
-                conversationId: options.conversationId || 'webhook-default',
-                waitForResponse: true, // Wait for agent response
-            },
-        }, {
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            timeout: 300000, // 5 minute timeout for long agent responses
+        // Escape the message for shell
+        const escapedMessage = options.message.replace(/'/g, "'\\''");
+
+        // Use clawdbot CLI to send message
+        // The --json flag returns structured output
+        const command = `clawdbot chat --message '${escapedMessage}' --conversation '${options.conversationId || 'webhook'}' --no-stream --json`;
+
+        api.logger.info(`Executing: clawdbot chat --message '${escapedMessage.slice(0, 30)}...'`);
+
+        const { stdout, stderr } = await execAsync(command, {
+            timeout: 300000, // 5 minute timeout
+            maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large responses
         });
 
-        if (response.data.error) {
-            throw new Error(response.data.error.message || 'RPC error');
+        if (stderr) {
+            api.logger.warn(`CLI stderr: ${stderr}`);
         }
 
-        const result = response.data.result;
-        return {
-            text: result?.text || result?.response || String(result),
-            model: result?.model,
-        };
-    } catch (error) {
-        api.logger.error(`Chat RPC failed: ${error}`);
+        try {
+            const result = JSON.parse(stdout);
+            return {
+                text: result.text || result.response || result.message || stdout,
+                model: result.model,
+            };
+        } catch {
+            // If not JSON, return raw output
+            return {
+                text: stdout.trim(),
+            };
+        }
+    } catch (error: unknown) {
+        const err = error as { message?: string; stderr?: string };
+        api.logger.error(`CLI command failed: ${err.message || error}`);
+        if (err.stderr) {
+            api.logger.error(`stderr: ${err.stderr}`);
+        }
         throw error;
     }
 }
