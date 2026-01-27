@@ -19,10 +19,11 @@ interface ClawdbotPluginApi {
         debug: (msg: string, ...args: unknown[]) => void;
     };
     config: PluginConfig;
-    runtime: {
-        agent: {
-            run: (options: AgentRunOptions) => Promise<AgentRunResult>;
-        };
+    // Call Gateway RPC methods
+    callRpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+    // Chat API for sending messages to agent
+    chat: {
+        send: (options: ChatSendOptions) => Promise<ChatSendResult>;
     };
     registerService: (service: BackgroundService) => void;
     registerCommand: (command: PluginCommand) => void;
@@ -47,19 +48,18 @@ interface WebhookServerConfig {
     timeout?: number;
 }
 
-interface AgentRunOptions {
+interface ChatSendOptions {
     message: string;
-    context?: {
-        channel?: string;
-        senderId?: string;
-        threadId?: string;
-        metadata?: Record<string, unknown>;
-    };
+    channel?: string;
+    conversationId?: string;
+    senderId?: string;
+    metadata?: Record<string, unknown>;
 }
 
-interface AgentRunResult {
+interface ChatSendResult {
     text: string;
-    thinking?: string;
+    conversationId?: string;
+    messageId?: string;
     metadata?: {
         thinking_time_ms?: number;
         model?: string;
@@ -235,15 +235,14 @@ async function processWebhookTask(
     api.logger.info(`Processing task for ${payload.metadata?.openid || 'unknown'}: ${payload.task.slice(0, 50)}...`);
 
     try {
-        // Run the agent with the task
+        // Send message to the agent using chat API
         const result = await Promise.race([
-            api.runtime.agent.run({
+            api.chat.send({
                 message: payload.task,
-                context: {
-                    channel: 'webhook',
-                    senderId: payload.metadata?.openid,
-                    metadata: payload.metadata,
-                },
+                channel: 'webhook',
+                senderId: payload.metadata?.openid,
+                conversationId: `webhook-${payload.metadata?.openid || 'default'}`,
+                metadata: payload.metadata,
             }),
             new Promise<never>((_, reject) =>
                 setTimeout(() => reject(new Error('Task timeout')), timeout)
