@@ -24,6 +24,7 @@ plugins:
         host: 0.0.0.0           # Optional, default: 0.0.0.0
         authToken: your-token   # Optional, auto-generated if not provided
         timeout: 300000         # Optional, default: 300000 (5 minutes)
+        agentId: default        # Optional, default: "default". Which agent to use.
 ```
 
 ### Auto-generated Auth Token
@@ -148,6 +149,38 @@ clawdbot plugins install -l .
 - Always set a strong `authToken` in production
 - Use HTTPS in production environments
 - Restrict which IPs can access the webhook endpoint (via firewall/reverse proxy)
+
+## Troubleshooting
+
+### Error: "No API key found for provider..."
+
+If you see an error like:
+```
+Error: No API key found for provider "anthropic". Auth store: .../agents/main/...
+```
+
+This means the agent trying to handle the message (usually `main` or `default`) doesn't have an API key configured.
+
+**Solution:**
+
+1. Configure the API key for the agent:
+   ```bash
+   clawdbot agents add main
+   # Follow the prompts to enter your API key
+   ```
+
+   > **Note for WSL / Docker users**:
+   > If you are running Clawdbot in WSL or a Docker container (indicated by paths like `/root/...` in logs), you must run the above command **inside that same environment**, not in Windows PowerShell.
+
+2. Or, configure the plugin to use a different agent that is already configured:
+   ```yaml
+   config:
+     agentId: "gpt4"  # Use your configured agent ID
+   ```
+
+### Error: "api.callRpc is not a function"
+
+This was a bug in older versions. Please update to the latest version of the plugin (v1.0.1+).
 
 ## License
 

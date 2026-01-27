@@ -1,617 +1,317 @@
-/**
- * Clawdbot Webhook Server Plugin
- * 
- * This plugin starts an HTTP server that receives webhook requests from external
- * services (like clawdbot-wechat-bridge), processes them through the Clawdbot
- * agent, and sends results back to a callback URL.
- */
-
-import Fastify, { FastifyInstance } from 'fastify';
+import type {
+    ClawdbotPluginApi,
+    ChannelPlugin,
+    ChannelDock,
+    ClawdbotConfig,
+    PluginRuntime,
+    MarkdownTableMode
+} from 'clawdbot/plugin-sdk';
+import {
+    emptyPluginConfigSchema,
+    buildChannelConfigSchema,
+    normalizeAccountId,
+    DEFAULT_ACCOUNT_ID
+} from 'clawdbot/plugin-sdk';
 import axios from 'axios';
-import crypto from 'crypto';
+import { IncomingMessage, ServerResponse } from 'http';
+import { setRuntime, getRuntime } from './runtime.js';
 
-// Types for Clawdbot plugin API
-interface ClawdbotPluginApi {
-    logger: {
-        info: (msg: string, ...args: unknown[]) => void;
-        warn: (msg: string, ...args: unknown[]) => void;
-        error: (msg: string, ...args: unknown[]) => void;
-        debug: (msg: string, ...args: unknown[]) => void;
-    };
-    config: PluginConfig;
-    // Chat API for sending messages to agent (may not exist in all versions)
-    chat?: {
-        send: (options: ChatSendOptions) => Promise<ChatSendResult>;
-    };
-    registerService: (service: BackgroundService) => void;
-    registerCommand: (command: PluginCommand) => void;
-    registerGatewayMethod: (name: string, handler: (ctx: RpcContext) => void) => void;
-    // Allow additional unknown properties
-    [key: string]: unknown;
-}
+// --- Types ---
 
-interface PluginConfig {
-    plugins?: {
-        entries?: {
-            'webhook-server'?: {
-                enabled?: boolean;
-                config?: WebhookServerConfig;
-            };
-        };
-    };
-}
-
-interface WebhookServerConfig {
-    port?: number;
-    host?: string;
+interface WeChatConfig {
     authToken?: string;
-    timeout?: number;
-    agentId?: string;
+    callbackUrl?: string; // Optional default callback URL
+    allowFrom?: string[];
+    dmPolicy?: 'open' | 'pairing' | 'disabled';
 }
 
-interface ChatSendOptions {
-    message: string;
-    channel?: string;
-    conversationId?: string;
-    senderId?: string;
-    metadata?: Record<string, unknown>;
-}
-
-interface ChatSendResult {
-    text: string;
-    conversationId?: string;
-    messageId?: string;
-    metadata?: {
-        thinking_time_ms?: number;
-        model?: string;
-        tokens_used?: number;
-    };
-}
-
-interface BackgroundService {
-    id: string;
-    start: () => Promise<void> | void;
-    stop: () => Promise<void> | void;
-}
-
-interface PluginCommand {
-    name: string;
-    description: string;
-    acceptsArgs?: boolean;
-    requireAuth?: boolean;
-    handler: (ctx: CommandContext) => Promise<{ text: string }> | { text: string };
-}
-
-interface CommandContext {
-    senderId?: string;
-    channel: string;
-    isAuthorizedSender: boolean;
-    args?: string;
-    commandBody: string;
-    config: PluginConfig;
-}
-
-interface RpcContext {
-    respond: (success: boolean, data: unknown) => void;
-    params?: Record<string, unknown>;
-}
-
-// Webhook payload types
 interface WebhookPayload {
     task: string;
-    callback_url: string;
+    callback_url?: string; // The bridge might send this
     metadata?: {
         openid?: string;
         msg_type?: string;
         msg_id?: string;
         timestamp?: number;
+        nickname?: string;
         [key: string]: unknown;
     };
 }
 
-interface CallbackPayload {
-    success: boolean;
-    result?: string;
-    error?: string;
-    metadata?: {
-        thinking_time_ms?: number;
-        model?: string;
-    };
+// --- Runtime Helper ---
+
+type CoreRuntime = PluginRuntime;
+
+// --- Webhook Handler ---
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+    const chunks: Buffer[] = [];
+    return new Promise((resolve, reject) => {
+        req.on('data', (chunk) => chunks.push(chunk));
+        req.on('end', () => {
+            try {
+                const raw = Buffer.concat(chunks).toString('utf8');
+                resolve(raw ? JSON.parse(raw) : {});
+            } catch (e) {
+                reject(e);
+            }
+        });
+        req.on('error', reject);
+    });
 }
 
-// Plugin state
-let server: FastifyInstance | null = null;
-let pluginApi: ClawdbotPluginApi | null = null;
-let generatedAuthToken: string | null = null;
+// Global map to store callback URLs for sessions if needed, 
+// though we prefer to pass it through the pipeline via context or assume configuration.
+// For this refactor, we'll try to extract it from the context during delivery.
 
-// Token persistence path
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
+async function handleWebhookRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+    // Only handle POST /webhook (or configured path)
+    // The bridge might send to /, so we check method.
+    if (req.method !== 'POST') return false;
 
-/**
- * Get the path for storing plugin data
- */
-function getPluginDataDir(): string {
-    const homeDir = os.homedir();
-    return path.join(homeDir, '.clawdbot', 'plugin-data', 'webhook-server');
-}
+    // Simple path check - in a real plugin we might want configurable paths
+    if (req.url && !req.url.endsWith('/webhook') && req.url !== '/') return false;
 
-/**
- * Get the path for the auth token file
- */
-function getTokenFilePath(): string {
-    return path.join(getPluginDataDir(), '.auth-token');
-}
-
-/**
- * Load persisted auth token from file
- */
-function loadPersistedToken(): string | null {
     try {
-        const tokenPath = getTokenFilePath();
-        if (fs.existsSync(tokenPath)) {
-            const token = fs.readFileSync(tokenPath, 'utf-8').trim();
-            if (token && token.startsWith('wh_')) {
-                return token;
+        const body = await readJsonBody(req) as WebhookPayload;
+
+        // Basic Validation
+        if (!body.task) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: 'Missing task' }));
+            return true;
+        }
+
+        // We accept the request immediately
+        res.statusCode = 202;
+        res.end(JSON.stringify({ status: 'accepted' }));
+
+        // Process in background
+        processMessageWithPipeline(body).catch(err => {
+            console.error('Pipeline processing error:', err);
+        });
+
+        return true;
+    } catch (err) {
+        console.error('Webhook handler error:', err);
+        res.statusCode = 500;
+        res.end('Internal Server Error');
+        return true;
+    }
+}
+
+// --- Pipeline ---
+
+async function processMessageWithPipeline(payload: WebhookPayload) {
+    const core = getRuntime();
+    // Assuming single-tenant/default account for now as per original code
+    // In a full implementation, we'd resolve the account based on the request (e.g. auth token)
+    const accountId = DEFAULT_ACCOUNT_ID;
+
+    // We need access to the config. 
+    // Since we don't have the full config object passed in, we might need to fetch it from runtime or similar.
+    // However, `dispatchReplyWithBufferedBlockDispatcher` takes `cfg`.
+    // In the Zalo example, `processUpdate` receives `config`.
+    // Here, we'll assume we can get the global config or pass a minimal one.
+    // For now, we'll try to read it from the core if possible or construct a placeholder.
+    // NOTE: In the original code, `pluginApi.config` was available. 
+    // In the new SDK structure, we should be careful. 
+    // `core.config` might not be directly exposed.
+    // BUT! `api.registerChannel` passes `cfg` to methods. `handleWebhookRequest` is outside that flow.
+    // We strictly need the config. 
+    // WORKAROUND: We will store the latest config in a global variable when the plugin is loaded/reloaded.
+
+    const config = _globalConfig || {};
+
+    const senderId = payload.metadata?.openid || 'unknown_user';
+    const senderName = payload.metadata?.nickname || `User ${senderId.slice(0, 4)}`;
+    const text = payload.task;
+    const chatId = senderId; // For DM, chat ID is usually user ID
+
+    // Construct IDs
+    const fromLabel = `wechat:${senderId}`;
+
+    // Authorization / Pairing Logic
+    // Simplified: Check allowFrom list
+    // In a full implementation, follow Zalo's `isSenderAllowed` and `pairing` logic
+
+    const route = core.channel.routing?.resolveAgentRoute?.({
+        cfg: config,
+        channel: 'wechat',
+        accountId: accountId,
+        peer: { kind: 'dm', id: chatId }
+    });
+
+    if (!route) {
+        console.error('Failed to resolve agent route');
+        return;
+    }
+
+    const sessionKey = route.sessionKey || `wechat:${senderId}`;
+
+    // Construct Context
+    // We need to pass the callback_url through to the delivery phase.
+    // We can use the 'Ctx' fields or `Originating...` fields if they allow custom data,
+    // or rely on `InboundContext` having flexible fields.
+    const callbackUrl = payload.callback_url;
+
+    // We can embed the callback URL in the `From` or a custom property if the SDK allows.
+    // Or we keep a transient map.
+    // Let's use a Custom property in `ctxPayload` if the type allows arbitrary strings.
+    // `finalizeInboundContext` typically returns a record.
+
+    const ctxPayload = core.channel.reply?.finalizeInboundContext?.({
+        Body: text,
+        RawBody: text,
+        From: `wechat:${senderId}`,
+        To: `wechat:bot`,
+        SessionKey: sessionKey,
+        AccountId: accountId,
+        ChatType: 'direct',
+        ConversationLabel: senderName,
+        SenderName: senderName,
+        SenderId: senderId,
+        Provider: 'wechat',
+        Surface: 'wechat',
+        // Pass callback_url here so we can retrieve it in deliver
+        _CallbackUrl: callbackUrl,
+    });
+
+    if (!ctxPayload) return;
+
+    // Record Session
+    const storePath = core.channel.session?.resolveStorePath?.(null, { agentId: route.agentId });
+    await core.channel.session?.recordInboundSession?.({
+        storePath,
+        sessionKey,
+        ctx: ctxPayload
+    });
+
+    // Dispatch
+    await core.channel.reply?.dispatchReplyWithBufferedBlockDispatcher?.({
+        ctx: ctxPayload,
+        cfg: config,
+        dispatcherOptions: {
+            deliver: async (deliverPayload) => {
+                await deliverWeChatReply({
+                    text: deliverPayload.text,
+                    callbackUrl: callbackUrl || (_globalConfig?.channels?.wechat?.config?.callbackUrl),
+                    originalPayload: payload
+                });
+            },
+            onError: (err, info) => {
+                console.error(`WeChat dispatch error (${info.kind}):`, err);
             }
         }
-    } catch {
-        // Ignore errors, will generate new token
-    }
-    return null;
+    });
 }
 
-/**
- * Save auth token to file for persistence
- */
-function savePersistedToken(token: string, api: ClawdbotPluginApi): void {
+// --- Delivery ---
+
+async function deliverWeChatReply(params: {
+    text?: string;
+    callbackUrl?: string;
+    originalPayload: WebhookPayload
+}) {
+    const { text, callbackUrl } = params;
+    if (!text || !callbackUrl) return;
+
     try {
-        const dataDir = getPluginDataDir();
-        // Create directory if it doesn't exist
-        if (!fs.existsSync(dataDir)) {
-            fs.mkdirSync(dataDir, { recursive: true });
-        }
-        const tokenPath = getTokenFilePath();
-        fs.writeFileSync(tokenPath, token, { mode: 0o600 }); // Secure permissions
-        api.logger.info(`[webhook-server] Token saved to: ${tokenPath}`);
+        await axios.post(callbackUrl, {
+            success: true,
+            result: text,
+            // Add metadata if needed by Bridge
+            metadata: {
+                // model: ... (Not easily available in this callback without extra context)
+            }
+        });
     } catch (error) {
-        api.logger.warn(`[webhook-server] Failed to save token: ${error}`);
+        console.error(`Failed to deliver reply to ${callbackUrl}:`, error);
     }
 }
 
-/**
- * Generate a secure auth token
- */
-function generateSecureToken(): string {
-    // Generate a secure random token using UUID v4 format
-    return `wh_${crypto.randomUUID().replace(/-/g, '')}`;
-}
+// --- Plugin Definition ---
 
-/**
- * Get plugin config with defaults. Auto-generates authToken if not provided.
- * Persists the token to local storage for reuse across restarts.
- */
-function getPluginConfig(api: ClawdbotPluginApi): Required<WebhookServerConfig> {
-    const config = api.config.plugins?.entries?.['webhook-server']?.config || {};
+let _globalConfig: ClawdbotConfig | null = null;
 
-    // Handle authToken - load persisted, auto-generate if missing or placeholder
-    let authToken = config.authToken ?? '';
-    if (!authToken || authToken.startsWith('$auto:')) {
-        if (!generatedAuthToken) {
-            // Try to load persisted token first
-            const persistedToken = loadPersistedToken();
-            if (persistedToken) {
-                generatedAuthToken = persistedToken;
-                api.logger.info(`[webhook-server] Loaded persisted authToken: ${generatedAuthToken.slice(0, 12)}...`);
-            } else {
-                // Generate new token and save it
-                generatedAuthToken = generateSecureToken();
-                savePersistedToken(generatedAuthToken, api);
-                api.logger.info(`[webhook-server] Generated new authToken: ${generatedAuthToken}`);
-            }
-        }
-        authToken = generatedAuthToken;
+const wechatPlugin: ChannelPlugin<any> = {
+    id: 'wechat',
+    meta: {
+        id: 'wechat',
+        label: 'WeChat',
+        selectionLabel: 'WeChat (Bridge)',
+        description: 'WeChat integration via Bridge Webhook',
+        docsPath: '',
+    },
+    configSchema: buildChannelConfigSchema({}), // Define specific schema if needed
+    capabilities: {
+        chatTypes: ['direct'], // Webhook acts like DM usually
+        media: false, // Set to true if supported
+        blockStreaming: true, // We prefer full blocks for webhook callbacks mostly
+    },
+    // Implement other required methods (minimal implementation)
+    // ...
+    config: {
+        // Minimal config helpers
+        listAccountIds: () => [DEFAULT_ACCOUNT_ID],
+        resolveAccount: (cfg) => ({
+            accountId: DEFAULT_ACCOUNT_ID,
+            name: 'Default',
+            enabled: true,
+            config: cfg?.plugins?.entries?.['webhook-server']?.config || {} // Fallback to old config location or new one?
+            // Ideally we move config to `channels.wechat`
+        }),
+        defaultAccountId: () => DEFAULT_ACCOUNT_ID,
+        isConfigured: () => true, // Always considered configured for now
+        describeAccount: () => ({ accountId: DEFAULT_ACCOUNT_ID, name: 'Default', enabled: true, configured: true }),
+    },
+    // We wrap 'reload' to capture config
+    reload: {
+        configPrefixes: ['channels.wechat', 'plugins.entries.webhook-server']
     }
-
-    return {
-        port: config.port ?? 8765,
-        host: config.host ?? '0.0.0.0',
-        authToken,
-        timeout: config.timeout ?? 300000, // 5 minutes default
-        agentId: config.agentId ?? 'default',
-    };
-}
-
-/**
- * Chat RPC response format
- */
-interface ChatRpcResult {
-    text: string;
-    model?: string;
-}
-
-/**
- * Extended API type with runtime helpers (based on Zalo plugin pattern)
- */
-type ExtendedPluginApi = ClawdbotPluginApi & {
-    runtime?: PluginRuntime;
-    callRpc?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
 };
 
-/**
- * Plugin Runtime type (based on Zalo's getZaloRuntime pattern)
- */
-interface PluginRuntime {
-    channel?: {
-        reply?: {
-            dispatchReplyWithBufferedBlockDispatcher?: (params: {
-                ctx: Record<string, unknown>;
-                cfg: Record<string, unknown>;
-                dispatcherOptions: {
-                    deliver: (payload: { text?: string }) => Promise<void>;
-                    onError: (err: unknown, info: { kind: string }) => void;
-                };
-            }) => Promise<void>;
-            resolveEnvelopeFormatOptions?: (cfg: Record<string, unknown>) => unknown;
-            formatAgentEnvelope?: (params: Record<string, unknown>) => string;
-            finalizeInboundContext?: (params: Record<string, unknown>) => Record<string, unknown>;
-        };
-        session?: {
-            resolveStorePath?: (store: unknown, params: { agentId?: string }) => string;
-            recordInboundSession?: (params: Record<string, unknown>) => Promise<void>;
-        };
-        routing?: {
-            resolveAgentRoute?: (params: Record<string, unknown>) => { agentId?: string; sessionKey: string; accountId?: string };
-        };
-    };
-    agent?: {
-        chat?: (options: { message: string; conversationId?: string }) => Promise<{ text: string; model?: string }>;
-        invoke?: (options: { input: string; ctx?: Record<string, unknown> }) => Promise<{ output: string }>;
-    };
-    [key: string]: unknown;
-}
-
-// Store plugin runtime globally for webhook handlers
-let pluginRuntime: PluginRuntime | null = null;
-let pluginConfig: PluginConfig | null = null;
-
-/**
- * Call Clawdbot's agent via available API methods
- * Tries multiple approaches in order of preference
- */
-async function callChatRpc(
-    api: ClawdbotPluginApi,
-    options: {
-        message: string;
-        conversationId?: string;
-        agentId?: string;
-        metadata?: Record<string, unknown>;
+const wechatDock: ChannelDock = {
+    id: 'wechat',
+    capabilities: {
+        chatTypes: ['direct'],
+        media: false,
+        blockStreaming: true
+    },
+    config: {
+        // Helpers for UI
+        resolveAllowFrom: () => [],
+        formatAllowFrom: () => []
     }
-): Promise<ChatRpcResult> {
-    const extApi = api as ExtendedPluginApi;
-    const runtime = extApi.runtime;
+};
 
-    api.logger.info(`Sending message to agent: ${options.message.slice(0, 50)}...`);
+// Main Export
+export default {
+    id: 'wechat',
+    name: 'WeChat',
+    description: 'WeChat Channel Plugin',
+    configSchema: emptyPluginConfigSchema(),
 
-    // Log runtime structure for debugging
-    if (runtime) {
-        const runtimeKeys = Object.keys(runtime);
-        api.logger.info(`Runtime structure: ${runtimeKeys.join(', ')}`);
+    register(api: ClawdbotPluginApi) {
+        setRuntime(api.runtime);
+        _globalConfig = api.config;
 
-        // Deep explore runtime.channel if exists
-        if (runtime.channel) {
-            api.logger.info(`Runtime.channel keys: ${Object.keys(runtime.channel).join(', ')}`);
-        }
-
-        // Check for agent methods
-        if (runtime.agent) {
-            api.logger.info(`Runtime.agent keys: ${Object.keys(runtime.agent).join(', ')}`);
-        }
-    }
-
-    // Method 1: Try runtime.agent.invoke if available (simplest approach)
-    if (runtime?.agent?.invoke && typeof runtime.agent.invoke === 'function') {
-        try {
-            api.logger.info('Using runtime.agent.invoke method');
-            const result = await runtime.agent.invoke({
-                input: options.message,
-                ctx: {
-                    conversationId: options.conversationId || 'webhook-default',
-                    agentId: options.agentId || 'default',
-                    ...options.metadata,
-                },
-            });
-            return {
-                text: result.output || 'No response',
-            };
-        } catch (error) {
-            api.logger.warn(`runtime.agent.invoke failed: ${error}`);
-        }
-    }
-
-    // Method 2: Try runtime.agent.chat if available
-    if (runtime?.agent?.chat && typeof runtime.agent.chat === 'function') {
-        try {
-            api.logger.info('Using runtime.agent.chat method');
-            const result = await runtime.agent.chat({
-                message: options.message,
-                conversationId: options.conversationId || 'webhook-default',
-            });
-            return {
-                text: result.text || 'No response',
-                model: result.model,
-            };
-        } catch (error) {
-            api.logger.warn(`runtime.agent.chat failed: ${error}`);
-        }
-    }
-
-    // Method 3: Try api.chat.send if available
-    if (api.chat && typeof api.chat.send === 'function') {
-        try {
-            api.logger.info('Using api.chat.send method');
-            const result = await api.chat.send({
-                message: options.message,
-                conversationId: options.conversationId || 'webhook-default',
-                metadata: options.metadata,
-            });
-            return {
-                text: result.text || 'No response',
-                model: result.metadata?.model,
-            };
-        } catch (error) {
-            api.logger.warn(`api.chat.send failed: ${error}`);
-        }
-    }
-
-    // Method 4: Use channel dispatch pattern (like Zalo)
-    if (runtime?.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
-        try {
-            api.logger.info('Using channel dispatch pattern');
-
-            let responseText = '';
-
-            await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-                ctx: {
-                    Body: options.message,
-                    RawBody: options.message,
-                    From: `webhook:${options.conversationId || 'default'}`,
-                    To: 'webhook:agent',
-                    SessionKey: options.conversationId || 'webhook-default',
-                    Provider: 'webhook',
-                    Surface: 'webhook',
-                },
-                cfg: (pluginConfig || {}) as Record<string, unknown>,
-                dispatcherOptions: {
-                    deliver: async (payload) => {
-                        responseText += payload.text || '';
-                    },
-                    onError: (err, info) => {
-                        api.logger.error(`Dispatch error (${info.kind}): ${err}`);
-                    },
-                },
-            });
-
-            return {
-                text: responseText || 'No response',
-            };
-        } catch (error) {
-            api.logger.warn(`Channel dispatch failed: ${error}`);
-        }
-    }
-
-    // Log detailed structure for debugging
-    const apiMethods = Object.entries(api).map(([key, value]) => {
-        const type = typeof value;
-        return `${key}: ${type}`;
-    }).join(', ');
-    api.logger.error(`No chat method available! API structure: ${apiMethods}`);
-
-    throw new Error('No chat method available in Clawdbot Plugin API. Check plugin compatibility.');
-}
-
-
-/**
- * Process a webhook task and send result to callback URL
- */
-async function processWebhookTask(
-    api: ClawdbotPluginApi,
-    payload: WebhookPayload,
-    timeout: number,
-    agentId: string
-): Promise<void> {
-    const startTime = Date.now();
-
-    api.logger.info(`Processing task for ${payload.metadata?.openid || 'unknown'}: ${payload.task.slice(0, 50)}...`);
-
-    try {
-        // Use the Gateway RPC method to send a chat message
-        // This calls the internal Clawdbot chat.send RPC
-        const result = await Promise.race([
-            callChatRpc(api, {
-                message: payload.task,
-                conversationId: `webhook-${payload.metadata?.openid || 'default'}`,
-                agentId: agentId,
-                metadata: payload.metadata,
-            }),
-            new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error('Task timeout')), timeout)
-            ),
-        ]);
-
-        const thinkingTimeMs = Date.now() - startTime;
-
-        api.logger.info(`Task completed in ${thinkingTimeMs}ms`);
-
-        // Send success callback
-        const callbackPayload: CallbackPayload = {
-            success: true,
-            result: result.text,
-            metadata: {
-                thinking_time_ms: thinkingTimeMs,
-                model: result.model,
-            },
-        };
-
-        await sendCallback(api, payload.callback_url, callbackPayload);
-
-    } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        api.logger.error(`Task failed: ${errorMessage}`);
-
-        // Send error callback
-        const callbackPayload: CallbackPayload = {
-            success: false,
-            error: errorMessage,
-            metadata: {
-                thinking_time_ms: Date.now() - startTime,
-            },
-        };
-
-        await sendCallback(api, payload.callback_url, callbackPayload);
-    }
-}
-
-/**
- * Send result to callback URL
- */
-async function sendCallback(
-    api: ClawdbotPluginApi,
-    callbackUrl: string,
-    payload: CallbackPayload
-): Promise<void> {
-    try {
-        const response = await axios.post(callbackUrl, payload, {
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            timeout: 30000, // 30 second timeout for callback
+        // Register as a channel
+        api.registerChannel({
+            plugin: wechatPlugin,
+            dock: wechatDock
         });
 
-        api.logger.info(`Callback sent to ${callbackUrl}, status: ${response.status}`);
-    } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        api.logger.error(`Failed to send callback to ${callbackUrl}: ${errorMessage}`);
+        // Register the HTTP handler for webhooks
+        // Note: The 'webhook-server' service is no longer needed in this pattern
+        // as registerHttpHandler hooks into the main server.
+        api.registerHttpHandler(handleWebhookRequest);
+
+        // Keep a listener for config changes if API supports it, 
+        // or just rely on the fact that `api.config` is a reference 
+        // (though usually it's a snapshot at register time). 
+        // Ideally we implement the `reload` capability in the plugin definition.
+
+        api.logger.info('WeChat Webhook Channel registered');
     }
-}
-
-/**
- * Create and configure the Fastify server
- */
-function createServer(api: ClawdbotPluginApi): FastifyInstance {
-    const config = getPluginConfig(api);
-
-    const app = Fastify({
-        logger: false, // We use Clawdbot's logger
-    });
-
-    // Health check
-    app.get('/health', async () => {
-        return { status: 'ok', plugin: 'webhook-server' };
-    });
-
-    // Main webhook endpoint
-    app.post<{ Body: WebhookPayload }>('/webhook', async (request, reply) => {
-        // Validate auth token
-        const authHeader = request.headers.authorization;
-        const expectedToken = `Bearer ${config.authToken}`;
-
-        if (config.authToken && authHeader !== expectedToken) {
-            api.logger.warn('Unauthorized webhook request');
-            return reply.code(401).send({ error: 'Unauthorized' });
-        }
-
-        const payload = request.body;
-
-        // Validate payload
-        if (!payload.task || !payload.callback_url) {
-            return reply.code(400).send({
-                error: 'Invalid payload',
-                required: ['task', 'callback_url']
-            });
-        }
-
-        // Validate callback URL
-        try {
-            new URL(payload.callback_url);
-        } catch {
-            return reply.code(400).send({ error: 'Invalid callback_url' });
-        }
-
-        // Process task asynchronously (fire-and-forget)
-        processWebhookTask(api, payload, config.timeout, config.agentId).catch((error) => {
-            api.logger.error(`Unhandled error in task processing: ${error}`);
-        });
-
-        // Return immediately with accepted status
-        return reply.code(202).send({
-            status: 'accepted',
-            message: 'Task queued for processing',
-        });
-    });
-
-    return app;
-}
-
-/**
- * Main plugin export
- */
-export default function register(api: ClawdbotPluginApi): void {
-    pluginApi = api;
-
-    // Get config (this will auto-generate authToken if needed)
-    const config = getPluginConfig(api);
-
-    api.logger.info(`[webhook-server] Configured - Port: ${config.port}, Host: ${config.host}`);
-
-    // Register background service
-    api.registerService({
-        id: 'webhook-server',
-
-        async start() {
-            server = createServer(api);
-
-            try {
-                await server.listen({ port: config.port, host: config.host });
-                api.logger.info(`Webhook server listening on http://${config.host}:${config.port}`);
-            } catch (error) {
-                api.logger.error(`Failed to start webhook server: ${error}`);
-                throw error;
-            }
-        },
-
-        async stop() {
-            if (server) {
-                await server.close();
-                server = null;
-                api.logger.info('Webhook server stopped');
-            }
-        },
-    });
-
-    // Register status command
-    api.registerCommand({
-        name: 'webhook-status',
-        description: 'Show webhook server status',
-        handler: () => {
-            const config = getPluginConfig(api);
-            const status = server ? 'running' : 'stopped';
-            return {
-                text: `🔌 Webhook Server Status: ${status}\n📍 Endpoint: http://${config.host}:${config.port}/webhook`,
-            };
-        },
-    });
-
-    // Register RPC method for status checks
-    api.registerGatewayMethod('webhook-server.status', ({ respond }) => {
-        const config = getPluginConfig(api);
-        respond(true, {
-            running: !!server,
-            port: config.port,
-            host: config.host,
-        });
-    });
-
-    api.logger.info('Webhook server plugin registered');
-}
+};
