@@ -246,10 +246,10 @@ const wechatPlugin: ChannelPlugin<any> = {
     },
     configSchema: buildChannelConfigSchema(
         z.object({
-            webhookUrl: z.string().optional(),
+            callbackUrl: z.string().optional().describe('URL to send replies to (e.g. Bridge URL)'),
         }).extend({
             accounts: z.object({}).catchall(z.object({
-                webhookUrl: z.string().optional(),
+                callbackUrl: z.string().optional(),
             })).optional(),
             defaultAccount: z.string().optional()
         })

@@ -12,20 +12,27 @@ clawdbot plugins install -l ./clawdbot-plugin-webhook-server
 
 ## Configuration
 
-Add to your Clawdbot config (`~/.clawdbot/config.yaml` or workspace `.clawdbot/config.yaml`):
+Update your Clawdbot config (`~/.clawdbot/config.yaml` or workspace `.clawdbot/config.yaml`).
 
+**Old Configuration (Deprecated):**
 ```yaml
 plugins:
   entries:
-    webhook-server:
-      enabled: true
-      config:
-        port: 8765              # Optional, default: 8765
-        host: 0.0.0.0           # Optional, default: 0.0.0.0
-        authToken: your-token   # Optional, auto-generated if not provided
-        timeout: 300000         # Optional, default: 300000 (5 minutes)
-        agentId: default        # Optional, default: "default". Which agent to use.
+    webhook-server: ...
 ```
+
+**New Configuration (Channel Plugin):**
+```yaml
+channels:
+  wechat:
+    enabled: true
+    config:
+       webhookUrl: "http://localhost:8765/webhook" # Optional override
+       # Port/Host are now managed by the main Clawdbot server or proxy
+```
+
+Make sure the plugin is installed/enabled. If you are using `clawdbot-wechat-bridge`, point it to the main Clawdbot HTTP server (typically port 3000 or as configured), e.g., `http://localhost:3000/webhook`.
+
 
 ### Auto-generated Auth Token
 
