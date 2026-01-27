@@ -4,6 +4,14 @@ import { validateSignature } from '../utils/signature.js';
 import { parseWeChatXml, buildTextReply } from '../utils/xml-parser.js';
 import { getBinding, setBinding, deleteBinding } from '../services/redis.js';
 import { forwardToClawdbot } from '../services/clawdbot-forwarder.js';
+import {
+    decryptMessage,
+    encryptMessage,
+    validateMsgSignature,
+    extractEncryptedContent,
+    buildEncryptedReply,
+    generateMsgSignature,
+} from '../utils/crypto.js';
 
 // Bind command format: bind <url> <token>
 const BIND_REGEX = /^bind\s+(\S+)\s+(\S+)$/i;
@@ -15,6 +23,9 @@ interface WeChatQueryParams {
     timestamp: string;
     nonce: string;
     echostr?: string;
+    encrypt_type?: string;
+    msg_signature?: string;
+    openid?: string;
 }
 
 export async function wechatRoutes(fastify: FastifyInstance): Promise<void> {
@@ -55,7 +66,7 @@ export async function wechatRoutes(fastify: FastifyInstance): Promise<void> {
             },
         },
         async (request, reply) => {
-            const { signature, timestamp, nonce } = request.query;
+            const { signature, timestamp, nonce, encrypt_type, msg_signature } = request.query;
 
             // Validate signature
             if (!signature || !timestamp || !nonce) {
@@ -69,16 +80,84 @@ export async function wechatRoutes(fastify: FastifyInstance): Promise<void> {
 
             // Parse XML message
             let message;
+            const body = request.body as string;
+            const isEncrypted = encrypt_type === 'aes';
+
             try {
-                const body = request.body as string;
-                message = parseWeChatXml(body);
+                if (isEncrypted) {
+                    // Handle encrypted message
+                    if (!config.wechat.encodingAESKey) {
+                        console.error('Encrypted message received but WECHAT_ENCODING_AES_KEY not configured');
+                        return reply.code(500).send('Encryption key not configured');
+                    }
+
+                    // Extract and validate encrypted content
+                    const encryptedContent = extractEncryptedContent(body);
+                    if (!encryptedContent) {
+                        return reply.code(400).send('Missing encrypted content');
+                    }
+
+                    // Validate msg_signature
+                    if (msg_signature) {
+                        const isValidMsgSig = validateMsgSignature(
+                            config.wechat.token,
+                            timestamp,
+                            nonce,
+                            encryptedContent,
+                            msg_signature
+                        );
+                        if (!isValidMsgSig) {
+                            console.error('Invalid msg_signature');
+                            return reply.code(403).send('Invalid msg_signature');
+                        }
+                    }
+
+                    // Decrypt the message
+                    const decryptedXml = decryptMessage(
+                        encryptedContent,
+                        config.wechat.encodingAESKey,
+                        config.wechat.appId
+                    );
+                    console.log('Decrypted message:', decryptedXml);
+                    message = parseWeChatXml(decryptedXml);
+                } else {
+                    // Plain text message
+                    message = parseWeChatXml(body);
+                }
             } catch (error) {
-                console.error('Failed to parse WeChat XML:', error);
-                return reply.code(400).send('Invalid XML');
+                console.error('Failed to parse/decrypt WeChat message:', error);
+                return reply.code(400).send('Invalid message');
             }
 
             const openId = message.FromUserName;
             const toUser = message.ToUserName;
+
+            /**
+             * Helper function to send reply (handles encryption if needed)
+             */
+            const sendReply = (plainXml: string) => {
+                if (isEncrypted && config.wechat.encodingAESKey) {
+                    // Encrypt the response
+                    const encrypted = encryptMessage(
+                        plainXml,
+                        config.wechat.encodingAESKey,
+                        config.wechat.appId
+                    );
+                    const replyTimestamp = String(Math.floor(Date.now() / 1000));
+                    const replyNonce = String(Math.floor(Math.random() * 1000000000));
+                    const replySignature = generateMsgSignature(
+                        config.wechat.token,
+                        replyTimestamp,
+                        replyNonce,
+                        encrypted
+                    );
+                    return reply.type('text/xml').send(
+                        buildEncryptedReply(encrypted, replySignature, replyTimestamp, replyNonce)
+                    );
+                } else {
+                    return reply.type('text/xml').send(plainXml);
+                }
+            };
 
             // Handle events
             if (message.MsgType === 'event') {
@@ -97,7 +176,7 @@ bind https://my-clawdbot.example.com/webhook abc123
 
 其他指令：
 • unbind - 解除绑定`;
-                    return reply.type('text/xml').send(buildTextReply(openId, toUser, welcomeMsg));
+                    return sendReply(buildTextReply(openId, toUser, welcomeMsg));
                 }
                 // Other events: return empty
                 return reply.type('text/plain').send('');
@@ -117,13 +196,13 @@ bind https://my-clawdbot.example.com/webhook abc123
                         try {
                             new URL(endpoint);
                         } catch {
-                            return reply.type('text/xml').send(
+                            return sendReply(
                                 buildTextReply(openId, toUser, '❌ 无效的 URL 格式，请检查后重试。')
                             );
                         }
 
                         await setBinding(openId, endpoint, token);
-                        return reply.type('text/xml').send(
+                        return sendReply(
                             buildTextReply(openId, toUser, `✅ 绑定成功！
 
 你的 Clawdbot 地址：${endpoint}
@@ -136,7 +215,7 @@ bind https://my-clawdbot.example.com/webhook abc123
                 }
 
                 // Not a bind command - prompt user to bind
-                return reply.type('text/xml').send(
+                return sendReply(
                     buildTextReply(openId, toUser, `👋 请先绑定你的 Clawdbot 实例。
 
 发送格式：
@@ -151,7 +230,7 @@ bind https://my-clawdbot.example.com/webhook abc123`)
             if (message.MsgType === 'text' && message.Content) {
                 if (UNBIND_REGEX.test(message.Content.trim())) {
                     await deleteBinding(openId);
-                    return reply.type('text/xml').send(
+                    return sendReply(
                         buildTextReply(openId, toUser, `✅ 已解除绑定。
 
 你可以随时使用 bind 指令重新绑定新的 Clawdbot 实例。`)
@@ -164,7 +243,7 @@ bind https://my-clawdbot.example.com/webhook abc123`)
 
             // Return empty string immediately to avoid WeChat timeout
             // We use customer service message API later to send the actual response
-            return reply.type('text/xml').send(
+            return sendReply(
                 buildTextReply(openId, toUser, '⏳ 正在处理中，请稍候...')
             );
         }
