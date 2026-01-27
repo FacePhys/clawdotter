@@ -27,6 +27,11 @@
                 "type": "number",
                 "default": 300000,
                 "description": "Maximum time (ms) to wait for agent task completion"
+            },
+            "agentId": {
+                "type": "string",
+                "default": "default",
+                "description": "Agent ID to use for processing messages (e.g., 'default', 'main')"
             }
         },
         "required": []
@@ -35,7 +40,8 @@
         "port": 8765,
         "host": "0.0.0.0",
         "authToken": "$auto:uuid",
-        "timeout": 300000
+        "timeout": 300000,
+        "agentId": "default"
     },
     "uiHints": {
         "authToken": {

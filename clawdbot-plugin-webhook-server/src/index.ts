@@ -46,6 +46,7 @@ interface WebhookServerConfig {
     host?: string;
     authToken?: string;
     timeout?: number;
+    agentId?: string;
 }
 
 interface ChatSendOptions {
@@ -218,6 +219,7 @@ function getPluginConfig(api: ClawdbotPluginApi): Required<WebhookServerConfig> 
         host: config.host ?? '0.0.0.0',
         authToken,
         timeout: config.timeout ?? 300000, // 5 minutes default
+        agentId: config.agentId ?? 'default',
     };
 }
 
@@ -283,6 +285,7 @@ async function callChatRpc(
     options: {
         message: string;
         conversationId?: string;
+        agentId?: string;
         metadata?: Record<string, unknown>;
     }
 ): Promise<ChatRpcResult> {
@@ -315,6 +318,7 @@ async function callChatRpc(
                 input: options.message,
                 ctx: {
                     conversationId: options.conversationId || 'webhook-default',
+                    agentId: options.agentId || 'default',
                     ...options.metadata,
                 },
             });
@@ -414,7 +418,8 @@ async function callChatRpc(
 async function processWebhookTask(
     api: ClawdbotPluginApi,
     payload: WebhookPayload,
-    timeout: number
+    timeout: number,
+    agentId: string
 ): Promise<void> {
     const startTime = Date.now();
 
@@ -427,6 +432,7 @@ async function processWebhookTask(
             callChatRpc(api, {
                 message: payload.task,
                 conversationId: `webhook-${payload.metadata?.openid || 'default'}`,
+                agentId: agentId,
                 metadata: payload.metadata,
             }),
             new Promise<never>((_, reject) =>
@@ -534,7 +540,7 @@ function createServer(api: ClawdbotPluginApi): FastifyInstance {
         }
 
         // Process task asynchronously (fire-and-forget)
-        processWebhookTask(api, payload, config.timeout).catch((error) => {
+        processWebhookTask(api, payload, config.timeout, config.agentId).catch((error) => {
             api.logger.error(`Unhandled error in task processing: ${error}`);
         });
 
