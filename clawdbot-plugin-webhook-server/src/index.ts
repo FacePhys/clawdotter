@@ -43,30 +43,6 @@ interface WebhookPayload {
 
 type CoreRuntime = PluginRuntime;
 
-declare module 'clawdbot/plugin-sdk' {
-    export interface PluginRuntime {
-        // ... (existing definitions)
-        channel: {
-            routing?: {
-                resolveAgentRoute?: (params: any) => { sessionKey: string; agentId?: string; accountId?: string };
-            };
-            reply?: {
-                resolveEnvelopeFormatOptions?: (cfg: any) => any;
-                formatAgentEnvelope?: (params: any) => string;
-                finalizeInboundContext?: (params: any) => any;
-                dispatchReplyWithBufferedBlockDispatcher?: (params: any) => Promise<void>;
-            };
-            session?: {
-                readSessionUpdatedAt?: (params: any) => number | undefined;
-                resolveStorePath?: (store: any, params: { agentId?: string }) => string;
-                recordInboundSession?: (params: any) => Promise<void>;
-            };
-            [key: string]: unknown;
-        };
-    }
-}
-
-
 // --- Webhook Handler ---
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -172,12 +148,17 @@ async function processMessageWithPipeline(payload: WebhookPayload) {
         return;
     }
 
-    // Construct ids
-    const fromLabel = `wechat:${senderId}`;
+    const sessionKey = route.sessionKey || `wechat:${senderId}`;
+
+    // Construct Context
+    // We need to pass the callback_url through to the delivery phase.
+    // We can use the 'Ctx' fields or `Originating...` fields if they allow custom data,
+    // or rely on `InboundContext` having flexible fields.
+    const callbackUrl = payload.callback_url;
 
     // Get Store Path (using config.session?.store if available)
     // We try to access config.session from the global config
-    const storePath = core.channel.session?.resolveStorePath?.(config.session?.store, { agentId: route.agentId });
+    const storePath = core.channel.session?.resolveStorePath?.((config as any).session?.store, { agentId: route.agentId });
 
     // Format Envelope
     const envelopeOptions = core.channel.reply?.resolveEnvelopeFormatOptions?.(config);
