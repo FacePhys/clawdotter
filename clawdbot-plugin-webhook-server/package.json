@@ -22,6 +22,11 @@
     ],
     "author": "",
     "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/NannaOlympicBroadcast/clawdbot-wechat-plugin.git",
+        "directory": "clawdbot-plugin-webhook-server"
+    },
     "clawdbot": {
         "extensions": [
             "dist/index.js"
