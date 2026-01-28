@@ -45,6 +45,27 @@ channels:
       # callbackUrl: "http://your-bridge-host:3000/callback"
 ```
 
+### 2.5 (可选) 启用 Ngrok 内网穿透
+
+如果您在本地开发或无公网 IP 的环境下运行 Clawdbot，可以使用内置的 ngrok 集成将服务暴露到公网。
+
+在 `plugins` 配置中启用：
+
+```yaml
+plugins:
+  entries:
+    webhook-server:
+      enabled: true
+      config:
+        useNgrok: true
+        ngrokAuthToken: "您的_NGROK_AUTHTOKEN" # 必填
+        ngrokPort: 18789 # 需与 Clawdbot 端口一致
+        ngrokRegion: "us" # 可选，默认为 us
+```
+
+启用后，Clawdbot 启动时会在日志中输出生成的公网 URL，请使用该 URL 进行绑定。
+```
+
 ### 3. 获取连接信息
 
 插件启动后，您的 Webhook 地址通常为 Clawdbot 的主服务地址加上 `/webhook`。

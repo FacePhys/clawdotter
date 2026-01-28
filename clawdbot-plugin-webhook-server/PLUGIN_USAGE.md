@@ -27,7 +27,27 @@ channels:
     config:
       # Optional: Explicitly set the callback URL if auto-detection fails
       # callbackUrl: "http://<bridge-host>:3000/callback"
+
+plugins:
+  entries:
+    webhook-server:
+      enabled: true
+      config:
+        # Ngrok Integration
+        useNgrok: false           # Set to true to enable
+        ngrokAuthToken: "..."     # Your ngrok authtoken
+        ngrokPort: 18789          # Port to tunnel (should match Clawdbot port)
+        ngrokRegion: "us"         # Ngrok region (us, eu, ap, etc.)
 ```
+
+### Ngrok Integration
+
+This plugin has built-in support for [ngrok](https://ngrok.com/) to expose your local server to the internet. This is useful for development or self-hosted environments without a public IP.
+
+1.  Sign up for an ngrok account and get your Authtoken.
+2.  Set `useNgrok: true` and `ngrokAuthToken` in your configuration.
+3.  Check the logs on startup for the generated public URL.
+
 
 ## 🔗 Architecture
 

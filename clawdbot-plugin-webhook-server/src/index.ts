@@ -335,7 +335,7 @@ export default {
 
         const webhookConfig = api.config.plugins?.entries?.['webhook-server']?.config || {};
         if (webhookConfig.useNgrok) {
-            const port = webhookConfig.ngrokPort || 8765;
+            const port = webhookConfig.ngrokPort || 18789;
             const authtoken = webhookConfig.ngrokAuthToken;
             const region = webhookConfig.ngrokRegion;
 
