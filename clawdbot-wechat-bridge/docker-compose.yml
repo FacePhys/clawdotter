@@ -17,10 +17,62 @@ services:
       - WECHAT_ENCODING_AES_KEY=${WECHAT_ENCODING_AES_KEY:-}
       - REDIS_URL=redis://redis:6379
       - BRIDGE_BASE_URL=${BRIDGE_BASE_URL}
+      - SSH_HOST=${SSH_HOST:-your-server.example.com}
+      - SSH_PORT=${SSH_PORT:-2222}
+      - ORCHESTRATOR_URL=http://orchestrator:8080
+      - VM_READY_TIMEOUT_MS=${VM_READY_TIMEOUT_MS:-30000}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     depends_on:
       - redis
+      - orchestrator
     networks:
+      - bridge-network
+
+  orchestrator:
+    build: ../vm-orchestrator
+    container_name: vm-orchestrator
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kvm:/dev/kvm
+    volumes:
+      - firecracker-data:/var/lib/firecracker
+      - /tmp/firecracker/sockets:/tmp/firecracker/sockets
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - VM_SUBNET=${VM_SUBNET:-10.0.1.0/24}
+      - GATEWAY_IP=${GATEWAY_IP:-10.0.1.1}
+      - BRIDGE_NAME=${BRIDGE_NAME:-fcbr0}
+      - BASE_ROOTFS_PATH=/var/lib/firecracker/rootfs/clawdbot.ext4
+      - KERNEL_PATH=/var/lib/firecracker/vmlinux
+      - VM_DATA_DIR=/var/lib/firecracker/vms
+      - DEFAULT_VCPU=${DEFAULT_VCPU:-1}
+      - DEFAULT_MEM_MIB=${DEFAULT_MEM_MIB:-512}
+    depends_on:
+      - redis
+    networks:
+      - bridge-network
+      - vm-network
+
+  ssh-gateway:
+    build: ../ssh-gateway
+    container_name: ssh-gateway
+    restart: unless-stopped
+    ports:
+      - "${SSH_PORT:-2222}:2222"
+    environment:
+      - LISTEN_ADDR=0.0.0.0:2222
+      - REDIS_URL=redis://redis:6379
+      - HOST_KEY_PATH=/etc/ssh-gateway/host_key
+      - VM_SSH_USER=user
+      - VM_SSH_PASS=clawdbot
+    volumes:
+      - ssh-keys:/etc/ssh-gateway
+    depends_on:
+      - redis
+    networks:
+      - vm-network
       - bridge-network
 
   redis:
@@ -35,7 +87,15 @@ services:
 
 volumes:
   redis-data:
+  firecracker-data:
+  ssh-keys:
 
 networks:
   bridge-network:
     driver: bridge
+  vm-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.1.0/24
+          gateway: 10.0.1.1

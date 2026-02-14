@@ -2,15 +2,19 @@ import Redis from 'ioredis';
 import { getConfig } from '../config.js';
 
 /**
- * User binding structure
+ * VM binding structure (replaces the old UserBinding).
+ * Maps a WeChat openid to a MicroVM in the VPC.
  */
-export interface UserBinding {
-    endpoint: string; // Clawdbot webhook URL
-    token: string;    // Authentication token for the Clawdbot instance
+export interface VMBinding {
+    vmIp: string;          // Internal VPC IP (e.g., "10.0.1.42")
+    webhookUrl: string;    // http://<vmIp>:3000/webhook
+    status: 'provisioning' | 'running' | 'stopped' | 'error';
     createdAt: number;
+    lastActiveAt: number;
+    errorMessage?: string;
 }
 
-const BINDING_PREFIX = 'wechat:binding:';
+const VM_BINDING_PREFIX = 'vm:binding:';
 
 let redisClient: Redis | null = null;
 
@@ -34,51 +38,63 @@ export function getRedis(): Redis {
 }
 
 /**
- * Set user binding (OpenID -> Clawdbot endpoint)
+ * Set VM binding for a user (openid → VM info)
  */
-export async function setBinding(
+export async function setVMBinding(
     openId: string,
-    endpoint: string,
-    token: string
+    binding: VMBinding
 ): Promise<void> {
     const redis = getRedis();
-    const binding: UserBinding = {
-        endpoint,
-        token,
-        createdAt: Date.now(),
-    };
-    await redis.set(BINDING_PREFIX + openId, JSON.stringify(binding));
+    await redis.set(VM_BINDING_PREFIX + openId, JSON.stringify(binding));
 }
 
 /**
- * Get user binding by OpenID
+ * Get VM binding by OpenID
  */
-export async function getBinding(openId: string): Promise<UserBinding | null> {
+export async function getVMBinding(openId: string): Promise<VMBinding | null> {
     const redis = getRedis();
-    const data = await redis.get(BINDING_PREFIX + openId);
+    const data = await redis.get(VM_BINDING_PREFIX + openId);
     if (!data) return null;
     try {
-        return JSON.parse(data) as UserBinding;
+        return JSON.parse(data) as VMBinding;
     } catch {
         return null;
     }
 }
 
 /**
- * Delete user binding
+ * Update VM binding status
  */
-export async function deleteBinding(openId: string): Promise<boolean> {
+export async function updateVMBindingStatus(
+    openId: string,
+    status: VMBinding['status'],
+    extraFields?: Partial<VMBinding>
+): Promise<void> {
+    const binding = await getVMBinding(openId);
+    if (!binding) return;
+    binding.status = status;
+    binding.lastActiveAt = Date.now();
+    if (extraFields) {
+        Object.assign(binding, extraFields);
+    }
+    await setVMBinding(openId, binding);
+}
+
+/**
+ * Delete VM binding
+ */
+export async function deleteVMBinding(openId: string): Promise<boolean> {
     const redis = getRedis();
-    const result = await redis.del(BINDING_PREFIX + openId);
+    const result = await redis.del(VM_BINDING_PREFIX + openId);
     return result > 0;
 }
 
 /**
- * Check if user is bound
+ * Check if user has a VM binding
  */
-export async function isBound(openId: string): Promise<boolean> {
+export async function hasVMBinding(openId: string): Promise<boolean> {
     const redis = getRedis();
-    return (await redis.exists(BINDING_PREFIX + openId)) > 0;
+    return (await redis.exists(VM_BINDING_PREFIX + openId)) > 0;
 }
 
 /**

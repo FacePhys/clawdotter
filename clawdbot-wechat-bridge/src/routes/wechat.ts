@@ -2,7 +2,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { getConfig } from '../config.js';
 import { validateSignature } from '../utils/signature.js';
 import { parseWeChatXml, buildTextReply } from '../utils/xml-parser.js';
-import { getBinding, setBinding, deleteBinding } from '../services/redis.js';
+import { getVMBinding, setVMBinding, deleteVMBinding, updateVMBindingStatus, VMBinding } from '../services/redis.js';
+import { getOrchestratorClient, VMInfo } from '../services/orchestrator-client.js';
 import { forwardToClawdbot } from '../services/clawdbot-forwarder.js';
 import {
     decryptMessage,
@@ -13,10 +14,12 @@ import {
     generateMsgSignature,
 } from '../utils/crypto.js';
 
-// Bind command format: bind <url> <token>
-const BIND_REGEX = /^bind\s+(\S+)\s+(\S+)$/i;
-// Unbind command
-const UNBIND_REGEX = /^unbind$/i;
+// User commands
+const STATUS_REGEX = /^status$/i;
+const RESTART_REGEX = /^restart$/i;
+const STOP_REGEX = /^stop$/i;
+const DESTROY_REGEX = /^destroy$/i;
+const HELP_REGEX = /^help$/i;
 
 interface WeChatQueryParams {
     signature: string;
@@ -30,10 +33,10 @@ interface WeChatQueryParams {
 
 export async function wechatRoutes(fastify: FastifyInstance): Promise<void> {
     const config = getConfig();
+    const orchestrator = getOrchestratorClient();
 
     /**
      * GET /wechat - WeChat server validation endpoint
-     * WeChat sends GET to verify our server
      */
     fastify.get<{ Querystring: WeChatQueryParams }>(
         '/wechat',
@@ -47,7 +50,6 @@ export async function wechatRoutes(fastify: FastifyInstance): Promise<void> {
             const isValid = validateSignature(config.wechat.token, signature, timestamp, nonce);
 
             if (isValid && echostr) {
-                // Return echostr for WeChat verification
                 return reply.type('text/plain').send(echostr);
             }
 
@@ -57,12 +59,13 @@ export async function wechatRoutes(fastify: FastifyInstance): Promise<void> {
 
     /**
      * POST /wechat - Handle incoming WeChat messages
+     * New flow: auto-provision VM on first message, route to internal IP
      */
     fastify.post<{ Querystring: WeChatQueryParams }>(
         '/wechat',
         {
             config: {
-                rawBody: true, // We need raw body for XML
+                rawBody: true,
             },
         },
         async (request, reply) => {
@@ -85,43 +88,33 @@ export async function wechatRoutes(fastify: FastifyInstance): Promise<void> {
 
             try {
                 if (isEncrypted) {
-                    // Handle encrypted message
                     if (!config.wechat.encodingAESKey) {
                         console.error('Encrypted message received but WECHAT_ENCODING_AES_KEY not configured');
                         return reply.code(500).send('Encryption key not configured');
                     }
 
-                    // Extract and validate encrypted content
                     const encryptedContent = extractEncryptedContent(body);
                     if (!encryptedContent) {
                         return reply.code(400).send('Missing encrypted content');
                     }
 
-                    // Validate msg_signature
                     if (msg_signature) {
                         const isValidMsgSig = validateMsgSignature(
-                            config.wechat.token,
-                            timestamp,
-                            nonce,
-                            encryptedContent,
-                            msg_signature
+                            config.wechat.token, timestamp, nonce,
+                            encryptedContent, msg_signature
                         );
                         if (!isValidMsgSig) {
-                            console.error('Invalid msg_signature');
                             return reply.code(403).send('Invalid msg_signature');
                         }
                     }
 
-                    // Decrypt the message
                     const decryptedXml = decryptMessage(
                         encryptedContent,
                         config.wechat.encodingAESKey,
                         config.wechat.appId
                     );
-                    console.log('Decrypted message:', decryptedXml);
                     message = parseWeChatXml(decryptedXml);
                 } else {
-                    // Plain text message
                     message = parseWeChatXml(body);
                 }
             } catch (error) {
@@ -133,23 +126,15 @@ export async function wechatRoutes(fastify: FastifyInstance): Promise<void> {
             const toUser = message.ToUserName;
 
             /**
-             * Helper function to send reply (handles encryption if needed)
+             * Helper to send reply (handles encryption if needed)
              */
             const sendReply = (plainXml: string) => {
                 if (isEncrypted && config.wechat.encodingAESKey) {
-                    // Encrypt the response
-                    const encrypted = encryptMessage(
-                        plainXml,
-                        config.wechat.encodingAESKey,
-                        config.wechat.appId
-                    );
+                    const encrypted = encryptMessage(plainXml, config.wechat.encodingAESKey, config.wechat.appId);
                     const replyTimestamp = String(Math.floor(Date.now() / 1000));
                     const replyNonce = String(Math.floor(Math.random() * 1000000000));
                     const replySignature = generateMsgSignature(
-                        config.wechat.token,
-                        replyTimestamp,
-                        replyNonce,
-                        encrypted
+                        config.wechat.token, replyTimestamp, replyNonce, encrypted
                     );
                     return reply.type('text/xml').send(
                         buildEncryptedReply(encrypted, replySignature, replyTimestamp, replyNonce)
@@ -159,93 +144,270 @@ export async function wechatRoutes(fastify: FastifyInstance): Promise<void> {
                 }
             };
 
-            // Handle events
+            // ========== EVENT HANDLING ==========
             if (message.MsgType === 'event') {
                 if (message.Event === 'subscribe') {
-                    // New follower - send welcome message
-                    const welcomeMsg = `👋 欢迎关注！
-
-这是一个 Clawdbot 桥接服务。请发送以下指令绑定你的 Clawdbot 实例：
-
-bind <你的Clawdbot地址> <Token>
-
-例如：
-bind https://my-clawdbot.example.com/webhook abc123
-
-绑定后，你可以直接发送消息与你的 Clawdbot 对话。
-
-其他指令：
-• unbind - 解除绑定`;
-                    return sendReply(buildTextReply(openId, toUser, welcomeMsg));
+                    // New follower → auto-provision VM
+                    return handleNewUser(openId, toUser, sendReply);
                 }
-                // Other events: return empty
                 return reply.type('text/plain').send('');
             }
 
-            // Check binding
-            const binding = await getBinding(openId);
+            // ========== COMMAND HANDLING ==========
+            if (message.MsgType === 'text' && message.Content) {
+                const content = message.Content.trim();
+
+                if (HELP_REGEX.test(content)) {
+                    const sshHost = config.bridge.sshHost;
+                    const sshPort = config.bridge.sshPort;
+                    return sendReply(buildTextReply(openId, toUser,
+                        `🤖 Clawdbot 云助手\n\n可用指令：\n• status - 查看 VM 状态\n• restart - 重启 VM\n• stop - 停止 VM\n• destroy - 销毁 VM 及数据\n• help - 显示帮助\n\n🖥 SSH 连接：\nssh ${openId}@${sshHost} -p ${sshPort}\n\n直接发送消息即可与 AI 对话。`
+                    ));
+                }
+
+                if (STATUS_REGEX.test(content)) {
+                    return handleStatusCommand(openId, toUser, sendReply);
+                }
+
+                if (RESTART_REGEX.test(content)) {
+                    return handleRestartCommand(openId, toUser, sendReply);
+                }
+
+                if (STOP_REGEX.test(content)) {
+                    return handleStopCommand(openId, toUser, sendReply);
+                }
+
+                if (DESTROY_REGEX.test(content)) {
+                    return handleDestroyCommand(openId, toUser, sendReply);
+                }
+            }
+
+            // ========== MESSAGE ROUTING ==========
+            const binding = await getVMBinding(openId);
 
             if (!binding) {
-                // Not bound - check if this is a bind command
-                if (message.MsgType === 'text' && message.Content) {
-                    const bindMatch = message.Content.match(BIND_REGEX);
-                    if (bindMatch) {
-                        const [, endpoint, token] = bindMatch;
-
-                        // Basic URL validation
-                        try {
-                            new URL(endpoint);
-                        } catch {
-                            return sendReply(
-                                buildTextReply(openId, toUser, '❌ 无效的 URL 格式，请检查后重试。')
-                            );
-                        }
-
-                        await setBinding(openId, endpoint, token);
-                        return sendReply(
-                            buildTextReply(openId, toUser, `✅ 绑定成功！
-
-你的 Clawdbot 地址：${endpoint}
-
-现在可以直接发送消息与你的 Clawdbot 对话了。
-
-提示：发送 unbind 可以解除绑定。`)
-                        );
-                    }
-                }
-
-                // Not a bind command - prompt user to bind
-                return sendReply(
-                    buildTextReply(openId, toUser, `👋 请先绑定你的 Clawdbot 实例。
-
-发送格式：
-bind <你的Clawdbot地址> <Token>
-
-例如：
-bind https://my-clawdbot.example.com/webhook abc123`)
-                );
+                // No VM yet → auto-provision
+                return handleNewUser(openId, toUser, sendReply);
             }
 
-            // Already bound - check for unbind command
-            if (message.MsgType === 'text' && message.Content) {
-                if (UNBIND_REGEX.test(message.Content.trim())) {
-                    await deleteBinding(openId);
+            switch (binding.status) {
+                case 'provisioning':
+                    return sendReply(buildTextReply(openId, toUser,
+                        '⏳ 你的 Clawdbot 正在启动中，请稍等几秒后再发送消息...'
+                    ));
+
+                case 'stopped':
+                    // Auto-restart on message
+                    return handleRestartCommand(openId, toUser, sendReply);
+
+                case 'error':
+                    return sendReply(buildTextReply(openId, toUser,
+                        `❌ VM 状态异常: ${binding.errorMessage || '未知错误'}\n\n发送 restart 尝试重启，或 destroy 后重新关注。`
+                    ));
+
+                case 'running':
+                    // Forward message to VM
+                    await updateVMBindingStatus(openId, 'running');
+                    forwardToClawdbot(message, binding);
                     return sendReply(
-                        buildTextReply(openId, toUser, `✅ 已解除绑定。
-
-你可以随时使用 bind 指令重新绑定新的 Clawdbot 实例。`)
+                        buildTextReply(openId, toUser, '⏳ 正在处理中，请稍候...')
                     );
-                }
+
+                default:
+                    return sendReply(buildTextReply(openId, toUser,
+                        '⚠️ 未知状态，请发送 help 查看可用指令。'
+                    ));
             }
-
-            // Forward message to Clawdbot (async, fire-and-forget)
-            forwardToClawdbot(message, binding);
-
-            // Return empty string immediately to avoid WeChat timeout
-            // We use customer service message API later to send the actual response
-            return sendReply(
-                buildTextReply(openId, toUser, '⏳ 正在处理中，请稍候...')
-            );
         }
     );
+
+    // ========== HANDLER FUNCTIONS ==========
+
+    /**
+     * Handle new user: provision a VM and reply with SSH info.
+     */
+    async function handleNewUser(
+        openId: string,
+        toUser: string,
+        sendReply: (xml: string) => void
+    ) {
+        // Set provisioning status immediately
+        const initialBinding: VMBinding = {
+            vmIp: '',
+            webhookUrl: '',
+            status: 'provisioning',
+            createdAt: Date.now(),
+            lastActiveAt: Date.now(),
+        };
+        await setVMBinding(openId, initialBinding);
+
+        // Trigger VM creation asynchronously
+        provisionVMAsync(openId);
+
+        return sendReply(buildTextReply(openId, toUser,
+            `👋 欢迎使用 Clawdbot 云智能体！\n\n🚀 正在为你分配专属 AI 环境，通常需要 10-30 秒...\n\n启动完成后，你可以直接发送消息与 AI 对话。\n\n发送 help 查看所有可用指令。`
+        ));
+    }
+
+    /**
+     * Asynchronously provision a VM via the Orchestrator.
+     * Updates the Redis binding on completion.
+     */
+    async function provisionVMAsync(openId: string): Promise<void> {
+        try {
+            console.log(`[Provision] Starting VM for ${openId}`);
+            const vmInfo: VMInfo = await orchestrator.createVM(openId);
+
+            const binding: VMBinding = {
+                vmIp: vmInfo.vm_ip,
+                webhookUrl: vmInfo.webhook_url,
+                status: vmInfo.status === 'running' ? 'running' : 'provisioning',
+                createdAt: Date.now(),
+                lastActiveAt: Date.now(),
+            };
+            await setVMBinding(openId, binding);
+
+            console.log(`[Provision] VM ready for ${openId}: IP=${vmInfo.vm_ip}`);
+
+            // Send SSH info via Customer Service API (async)
+            const { sendTextMessage } = await import('../services/wechat-message.js');
+            const sshHost = config.bridge.sshHost;
+            const sshPort = config.bridge.sshPort;
+            await sendTextMessage(openId,
+                `✅ 你的 Clawdbot 已就绪！\n\n` +
+                `🖥 SSH 连接：\nssh ${openId}@${sshHost} -p ${sshPort}\n` +
+                `密码: clawdbot\n\n` +
+                `现在可以直接发送消息与 AI 对话了。`
+            );
+        } catch (error) {
+            console.error(`[Provision] Failed for ${openId}:`, error);
+            await updateVMBindingStatus(openId, 'error', {
+                errorMessage: error instanceof Error ? error.message : String(error),
+            });
+
+            try {
+                const { sendTextMessage } = await import('../services/wechat-message.js');
+                await sendTextMessage(openId,
+                    `❌ OpenClaw 启动失败，请稍后重试。\n\n发送 restart 尝试重新启动。`
+                );
+            } catch {
+                // Ignore send failure
+            }
+        }
+    }
+
+    /**
+     * Handle `status` command
+     */
+    async function handleStatusCommand(
+        openId: string,
+        toUser: string,
+        sendReply: (xml: string) => void
+    ) {
+        const binding = await getVMBinding(openId);
+        if (!binding) {
+            return sendReply(buildTextReply(openId, toUser,
+                '📭 你还没有运行中的 Clawdbot 实例。\n\n发送任意消息即可自动创建。'
+            ));
+        }
+
+        const statusEmoji: Record<string, string> = {
+            provisioning: '🔄',
+            running: '🟢',
+            stopped: '🔴',
+            error: '❌',
+        };
+
+        const sshHost = config.bridge.sshHost;
+        const sshPort = config.bridge.sshPort;
+        const createdDate = new Date(binding.createdAt).toLocaleString('zh-CN');
+        return sendReply(buildTextReply(openId, toUser,
+            `${statusEmoji[binding.status] || '❓'} VM 状态: ${binding.status}\n` +
+            `🖥 IP: ${binding.vmIp || 'N/A'}\n` +
+            `🔌 SSH: ssh ${openId}@${sshHost} -p ${sshPort}\n` +
+            `📅 创建时间: ${createdDate}`
+        ));
+    }
+
+    /**
+     * Handle `restart` command
+     */
+    async function handleRestartCommand(
+        openId: string,
+        toUser: string,
+        sendReply: (xml: string) => void
+    ) {
+        await updateVMBindingStatus(openId, 'provisioning');
+
+        // Trigger restart asynchronously
+        (async () => {
+            try {
+                const vmInfo = await orchestrator.startVM(openId);
+                const binding: VMBinding = {
+                    vmIp: vmInfo.vm_ip,
+                    webhookUrl: vmInfo.webhook_url,
+                    status: 'running',
+                    createdAt: Date.now(),
+                    lastActiveAt: Date.now(),
+                };
+                await setVMBinding(openId, binding);
+
+                const { sendTextMessage } = await import('../services/wechat-message.js');
+                await sendTextMessage(openId, '✅ Clawdbot 已重新启动！');
+            } catch (err) {
+                console.error(`[Restart] Failed for ${openId}:`, err);
+                await updateVMBindingStatus(openId, 'error', {
+                    errorMessage: err instanceof Error ? err.message : String(err),
+                });
+            }
+        })();
+
+        return sendReply(buildTextReply(openId, toUser,
+            '🔄 正在重启 Clawdbot，请稍候...'
+        ));
+    }
+
+    /**
+     * Handle `stop` command
+     */
+    async function handleStopCommand(
+        openId: string,
+        toUser: string,
+        sendReply: (xml: string) => void
+    ) {
+        try {
+            await orchestrator.stopVM(openId);
+            await updateVMBindingStatus(openId, 'stopped');
+            return sendReply(buildTextReply(openId, toUser,
+                '🔴 Clawdbot 已停止。\n\n发送 restart 可重新启动，数据已保留。'
+            ));
+        } catch (err) {
+            console.error(`[Stop] Failed for ${openId}:`, err);
+            return sendReply(buildTextReply(openId, toUser,
+                '❌ 停止失败，请稍后重试。'
+            ));
+        }
+    }
+
+    /**
+     * Handle `destroy` command
+     */
+    async function handleDestroyCommand(
+        openId: string,
+        toUser: string,
+        sendReply: (xml: string) => void
+    ) {
+        try {
+            await orchestrator.destroyVM(openId);
+            await deleteVMBinding(openId);
+            return sendReply(buildTextReply(openId, toUser,
+                '🗑️ Clawdbot 已销毁，所有数据已删除。\n\n发送任意消息可重新创建。'
+            ));
+        } catch (err) {
+            console.error(`[Destroy] Failed for ${openId}:`, err);
+            return sendReply(buildTextReply(openId, toUser,
+                '❌ 销毁失败，请稍后重试。'
+            ));
+        }
+    }
 }

@@ -10,10 +10,16 @@ For full source code, issues, and bridge deployment guide, please visit our GitH
 
 ## 🚀 Installation
 
-Install the plugin from NPM:
+Install the plugin from the local directory:
 
 ```bash
-clawdbot plugins install @haiyanfengli-llc/webhook-server
+openclaw plugins install ./clawdbot-plugin-webhook-server
+```
+
+Or from NPM:
+
+```bash
+openclaw plugins install @haiyanfengli-llc/webhook-server
 ```
 
 ## ⚙️ Configuration
@@ -44,30 +50,12 @@ Add the following configuration to your Clawdbot `clawdbot.json`:
   "plugins": {
     "entries": {
       "webhook-server": {
-        "enabled": true,
-        "config": {
-          "useNgrok": false,
-          "ngrokAuthToken": "...",
-          "ngrokPort": 18789,
-          "ngrokRegion": "us"
-        }
+        "enabled": true
       }
     }
   }
 }
 ```
-*Note: `callbackUrl` is optional. `ngrokAuthToken` is optional if `NGROK_AUTHTOKEN` env var is set.*
-
-### Ngrok Integration
-
-This plugin has built-in support for [ngrok](https://ngrok.com/) to expose your local server to the internet. This is useful for development or self-hosted environments without a public IP.
-
-1.  Sign up for an ngrok account and get your Authtoken.
-2.  Set `useNgrok: true` in your configuration.
-3.  Provide the authtoken via `NGROK_AUTHTOKEN` environment variable (Recommended) or `ngrokAuthToken` in config.
-    *   **Note:** The `NGROK_AUTHTOKEN` environment variable takes precedence over the configuration file.
-4.  Check the logs on startup for the generated public URL.
-
 
 ## 🔗 Architecture
 

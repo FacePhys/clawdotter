@@ -22,6 +22,14 @@ export interface Config {
     // Bridge
     bridge: {
         baseUrl: string; // Public URL of this bridge (for callback URLs)
+        sshHost: string; // Public hostname for SSH connections
+        sshPort: number; // SSH gateway port (default: 2222)
+    };
+
+    // VM Orchestrator
+    orchestrator: {
+        url: string;              // Orchestrator API URL (e.g., "http://orchestrator:8080")
+        vmReadyTimeoutMs: number; // Max wait for VM boot (default: 30000)
     };
 }
 
@@ -51,6 +59,13 @@ export function loadConfig(): Config {
 
         bridge: {
             baseUrl: requireEnv('BRIDGE_BASE_URL'),
+            sshHost: process.env.SSH_HOST || 'your-server.example.com',
+            sshPort: parseInt(process.env.SSH_PORT || '2222', 10),
+        },
+
+        orchestrator: {
+            url: process.env.ORCHESTRATOR_URL || 'http://orchestrator:8080',
+            vmReadyTimeoutMs: parseInt(process.env.VM_READY_TIMEOUT_MS || '30000', 10),
         },
     };
 }

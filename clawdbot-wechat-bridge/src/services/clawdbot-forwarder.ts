@@ -1,10 +1,10 @@
 import axios from 'axios';
 import { getConfig } from '../config.js';
 import type { WeChatMessage } from '../utils/xml-parser.js';
-import type { UserBinding } from './redis.js';
+import type { VMBinding } from './redis.js';
 
 /**
- * Payload sent to Clawdbot webhook
+ * Payload sent to the OpenClaw webhook inside the MicroVM.
  */
 export interface ClawdbotWebhookPayload {
     task: string;
@@ -18,25 +18,24 @@ export interface ClawdbotWebhookPayload {
 }
 
 /**
- * Forward a WeChat message to the user's Clawdbot instance
- * This is done asynchronously (fire-and-forget)
+ * Forward a WeChat message to the user's OpenClaw VM.
+ * Routes to the internal VPC IP — no auth needed on private network.
  */
 export function forwardToClawdbot(
     message: WeChatMessage,
-    binding: UserBinding
+    binding: VMBinding
 ): void {
-    // Fire-and-forget: don't await
     doForward(message, binding).catch((error) => {
-        console.error(`Failed to forward message to Clawdbot:`, error);
+        console.error(`Failed to forward message to VM:`, error);
     });
 }
 
 /**
- * Internal forwarding implementation
+ * Internal forwarding implementation.
  */
 async function doForward(
     message: WeChatMessage,
-    binding: UserBinding
+    binding: VMBinding
 ): Promise<void> {
     const config = getConfig();
 
@@ -47,7 +46,6 @@ async function doForward(
             task = message.Content || '';
             break;
         case 'voice':
-            // Use voice recognition result if available
             task = message.Recognition || '[语音消息，无法识别]';
             break;
         case 'image':
@@ -76,31 +74,15 @@ async function doForward(
         },
     };
 
-    console.log(`Forwarding message to Clawdbot: ${binding.endpoint}`);
+    // Route to internal VPC IP — no auth token needed
+    console.log(`Forwarding message to VM: ${binding.webhookUrl}`);
 
-    const response = await axios.post(binding.endpoint, payload, {
+    const response = await axios.post(binding.webhookUrl, payload, {
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${binding.token}`,
         },
-        timeout: 10000, // 10 second timeout for the initial handshake
+        timeout: 10000,
     });
 
-    console.log(`Clawdbot responded with status: ${response.status}`);
-}
-
-/**
- * Synchronous forward for testing (waits for Clawdbot response)
- */
-export async function forwardToClawdbotSync(
-    message: WeChatMessage,
-    binding: UserBinding
-): Promise<boolean> {
-    try {
-        await doForward(message, binding);
-        return true;
-    } catch (error) {
-        console.error('Failed to forward to Clawdbot:', error);
-        return false;
-    }
+    console.log(`VM responded with status: ${response.status}`);
 }
