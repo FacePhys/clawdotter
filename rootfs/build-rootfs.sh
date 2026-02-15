@@ -159,6 +159,12 @@ chroot "$MOUNTPOINT" /bin/sh << 'CHROOTEOF'
 # --ignore-scripts: skip node-llama-cpp postinstall (compiles llama.cpp locally)
 # We use remote ChatGLM-5 API, not local LLM, so llama.cpp is not needed.
 echo "Installing openclaw from npm..."
+
+# Force git to use HTTPS instead of SSH for GitHub URLs
+# (some deps like libsignal-node use ssh://git@github.com/... which fails without SSH keys)
+git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+
 npm install -g openclaw@latest --ignore-scripts
 
 # Verify openclaw is installed
