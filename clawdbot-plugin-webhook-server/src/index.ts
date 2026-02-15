@@ -8,14 +8,12 @@ import type {
 } from 'openclaw/plugin-sdk';
 import {
     emptyPluginConfigSchema,
-    buildChannelConfigSchema,
     normalizeAccountId,
     DEFAULT_ACCOUNT_ID
 } from 'openclaw/plugin-sdk';
 import axios from 'axios';
 import { IncomingMessage, ServerResponse } from 'http';
 import { setRuntime, getRuntime } from './runtime.js';
-import { z } from 'zod';
 
 
 // --- Types ---
@@ -271,16 +269,7 @@ const wechatPlugin: ChannelPlugin<any> = {
         description: 'WeChat integration via Bridge Webhook',
         docsPath: '',
     },
-    configSchema: buildChannelConfigSchema(
-        z.object({
-            callbackUrl: z.string().optional().describe('URL to send replies to (e.g. Bridge URL)'),
-        }).extend({
-            accounts: z.object({}).catchall(z.object({
-                callbackUrl: z.string().optional(),
-            })).optional(),
-            defaultAccount: z.string().optional()
-        })
-    ),
+    configSchema: emptyPluginConfigSchema(),
     capabilities: {
         chatTypes: ['direct'], // Webhook acts like DM usually
         media: false, // Set to true if supported
