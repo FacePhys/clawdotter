@@ -183,6 +183,9 @@ OPENCLAW_HOME="/home/user/.openclaw"
 mkdir -p "$OPENCLAW_HOME"
 cat > "$OPENCLAW_HOME/openclaw.json" << 'CONFIGEOF'
 {
+  "env": {
+    "ZHIPU_API_KEY": ""
+  },
   "channels": {
     "wechat": {
       "enabled": true,
@@ -199,9 +202,42 @@ cat > "$OPENCLAW_HOME/openclaw.json" << 'CONFIGEOF'
     }
   },
   "agents": {
-    "default": {
-      "model": "claude-sonnet-4-20250514",
-      "systemPrompt": "You are a helpful AI assistant."
+    "defaults": {
+      "model": {
+        "primary": "zhipu/glm-5"
+      },
+      "models": {
+        "zhipu/glm-5": { "alias": "glm5" }
+      },
+      "systemPrompt": "You are a helpful AI assistant. Respond in the same language as the user.",
+      "contextTokens": 200000,
+      "timeoutSeconds": 300
+    }
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "zhipu": {
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "apiKey": "${ZHIPU_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "glm-5",
+            "name": "ChatGLM-5",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {
+              "input": 0.001,
+              "output": 0.0032,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 128000
+          }
+        ]
+      }
     }
   }
 }
@@ -273,6 +309,7 @@ cat > "$MOUNTPOINT/etc/motd" << 'EOF'
         |_|
 
   OpenClaw AI Agent — Firecracker MicroVM
+  Default model: ChatGLM-5 (智谱AI)
   Gateway on port 18789
 
 EOF
@@ -293,7 +330,8 @@ echo "  • clawdbot-plugin-webhook-server (local install, ngrok removed)"
 echo "  • openssh-server (user: user / password: clawdbot)"
 echo ""
 echo "Next steps:"
-echo "  1. Place a vmlinux kernel at /var/lib/firecracker/vmlinux"
-echo "  2. Copy $OUTPUT to /var/lib/firecracker/rootfs/"
-echo "  3. Run setup-network.sh on the host"
-echo "  4. Start the orchestrator"
+echo "  1. Set ZHIPU_API_KEY in the VM environment (get from open.bigmodel.cn)"
+echo "  2. Place a vmlinux kernel at /var/lib/firecracker/vmlinux"
+echo "  3. Copy $OUTPUT to /var/lib/firecracker/rootfs/"
+echo "  4. Run setup-network.sh on the host"
+echo "  5. Start the orchestrator"
