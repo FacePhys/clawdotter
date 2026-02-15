@@ -69,10 +69,10 @@ trap cleanup EXIT
 # 3. Install Alpine base system
 echo "[3/7] Installing Alpine base system..."
 ARCH=$(uname -m)
-ALPINE_VERSION="3.19.7"
+ALPINE_VERSION="3.21.6"
 
 # Use Alpine minirootfs tarball — works reliably on any Linux host (Ubuntu, etc.)
-MINIROOTFS_URL="https://mirrors.aliyun.com/alpine/v3.19/releases/${ARCH}/alpine-minirootfs-${ALPINE_VERSION}-${ARCH}.tar.gz"
+MINIROOTFS_URL="https://mirrors.aliyun.com/alpine/v3.21/releases/${ARCH}/alpine-minirootfs-${ALPINE_VERSION}-${ARCH}.tar.gz"
 echo "Downloading Alpine minirootfs v${ALPINE_VERSION} (${ARCH})..."
 curl -fSL "$MINIROOTFS_URL" -o /tmp/alpine-minirootfs.tar.gz
 if [ $? -ne 0 ]; then
@@ -93,8 +93,8 @@ EOF
 
 # Configure Alpine repos (use Alibaba Cloud mirror for China)
 cat > "$MOUNTPOINT/etc/apk/repositories" << 'EOF'
-https://mirrors.aliyun.com/alpine/v3.19/main
-https://mirrors.aliyun.com/alpine/v3.19/community
+https://mirrors.aliyun.com/alpine/v3.21/main
+https://mirrors.aliyun.com/alpine/v3.21/community
 EOF
 
 # Mount proc/sys/dev for chroot (needed for apk install)
@@ -107,9 +107,7 @@ mount -t devtmpfs dev "$MOUNTPOINT/dev"
 #       Must install Node.js via apk from Alpine repos.
 echo "Installing packages in chroot..."
 chroot "$MOUNTPOINT" /bin/sh << 'CHROOTEOF'
-# Add Alpine edge repos for Node.js 22.x (3.19 only has Node 20.15 which is too old for npm 11)
-echo "https://mirrors.aliyun.com/alpine/edge/main" >> /etc/apk/repositories
-echo "https://mirrors.aliyun.com/alpine/edge/community" >> /etc/apk/repositories
+# Alpine 3.21 has Node.js 22.x + OpenSSL 3.4.x natively — no edge repos needed
 
 apk update
 apk add --no-cache \
