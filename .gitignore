@@ -4,7 +4,7 @@ references/
 
 # Build output
 dist/
-
+*.ext4
 # Environment files (contain secrets)
 .env
 .env.local
