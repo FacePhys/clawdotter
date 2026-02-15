@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // Config holds all orchestrator configuration.
@@ -72,15 +74,15 @@ func Load() (*Config, error) {
 		SocketDir:      envOrDefault("SOCKET_DIR", "/tmp/firecracker/sockets"),
 	}
 
-	// Validate required paths exist
+	// Check Firecracker paths — warn if missing (VM creation will fail, but API can still start)
 	if _, err := os.Stat(cfg.FirecrackerBin); os.IsNotExist(err) {
-		return nil, fmt.Errorf("firecracker binary not found: %s", cfg.FirecrackerBin)
+		log.Warnf("Firecracker binary not found: %s (VM creation will be unavailable)", cfg.FirecrackerBin)
 	}
 	if _, err := os.Stat(cfg.KernelPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("kernel image not found: %s", cfg.KernelPath)
+		log.Warnf("Kernel image not found: %s (VM creation will be unavailable)", cfg.KernelPath)
 	}
 	if _, err := os.Stat(cfg.BaseRootfsPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("base rootfs not found: %s", cfg.BaseRootfsPath)
+		log.Warnf("Base rootfs not found: %s (VM creation will be unavailable)", cfg.BaseRootfsPath)
 	}
 
 	// Ensure directories exist
