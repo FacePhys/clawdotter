@@ -115,6 +115,7 @@ apk update
 apk add --no-cache \
     openrc openssh bash curl shadow git \
     python3 make g++ linux-headers \
+    cmake samurai \
     nodejs npm
 
 # Verify Node.js
@@ -159,8 +160,10 @@ cp -r "$PLUGIN_SRC" "$MOUNTPOINT/tmp/clawdbot-plugin-webhook-server"
 
 chroot "$MOUNTPOINT" /bin/sh << 'CHROOTEOF'
 # Install openclaw globally — this provides the `openclaw` CLI
+# --ignore-scripts: skip node-llama-cpp postinstall (compiles llama.cpp locally)
+# We use remote ChatGLM-5 API, not local LLM, so llama.cpp is not needed.
 echo "Installing openclaw from npm..."
-npm install -g openclaw@latest
+npm install -g openclaw@latest --ignore-scripts
 
 # Verify openclaw is installed
 if ! command -v openclaw &> /dev/null; then
