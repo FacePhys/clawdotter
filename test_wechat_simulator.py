@@ -39,10 +39,10 @@ except ImportError:
 
 import os
 
-BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://localhost:3000")
-WECHAT_TOKEN = os.environ.get("WECHAT_TOKEN", "test_token")
+BRIDGE_URL = os.environ.get("BRIDGE_URL", "https://helga-nonregulatory-alonso.ngrok-free.dev")
+WECHAT_TOKEN = os.environ.get("WECHAT_TOKEN", "cccc1234")
 FAKE_OPENID = os.environ.get("FAKE_OPENID", "")
-FAKE_APPID = os.environ.get("FAKE_APPID", "wx_test_appid")
+FAKE_APPID = os.environ.get("FAKE_APPID", "wxe3d24fb627d492a8")
 
 # 如果没有设置 FAKE_OPENID，生成一个模拟的
 if not FAKE_OPENID:
