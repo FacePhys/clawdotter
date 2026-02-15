@@ -288,43 +288,6 @@ sudo cp output/clawdbot.ext4 /var/lib/firecracker/rootfs/
 
 ---
 
-### Windows WSL 一键安装
-
-> [!TIP]
-> 适用于 Windows 用户在本地快速体验。脚本会自动安装 WSL2、Ubuntu 及所有依赖。
-
-#### 系统要求
-
-- Windows 10 版本 2004 (build 19041)+ 或 Windows 11
-- 管理员权限
-- ≥ 4GB 可用磁盘空间
-
-#### 快速开始
-
-```powershell
-# 以管理员身份打开 PowerShell，运行：
-iwr -useb https://cpilot.net/downloads/install-wsl.ps1 | iex
-```
-
-脚本将自动完成：
-1. 检测并安装 WSL 2
-2. 安装 Ubuntu 发行版
-3. 安装 Node.js 22、OpenClaw 和微信插件
-4. 配置 ngrok 内网穿透
-5. 显示公众号绑定命令
-
-#### 自定义参数
-
-```powershell
-$env:CLAWDBOT_PORT=18789              # 自定义端口
-$env:NGROK_AUTHTOKEN="your_token"     # 预设 ngrok token
-$env:NPM_REGISTRY="https://registry.npmmirror.com"  # 国内镜像
-$env:AUTO_Y=1                          # 跳过确认提示
-.\install-wsl.ps1
-```
-
----
-
 ## 使用手册
 
 ### 微信后台配置
