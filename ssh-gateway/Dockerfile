@@ -3,12 +3,11 @@ FROM golang:1.22-alpine AS builder
 
 RUN apk add --no-cache git
 
-WORKDIR /app
-COPY go.mod ./
-RUN go mod tidy
-RUN go mod download
+ENV GOPROXY=https://goproxy.cn,direct
 
+WORKDIR /app
 COPY . .
+RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -o /ssh-gateway ./cmd/gateway
 
 # Production stage
