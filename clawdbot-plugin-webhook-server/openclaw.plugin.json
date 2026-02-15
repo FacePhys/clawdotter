@@ -3,11 +3,9 @@
     "name": "Webhook Server",
     "version": "1.0.2",
     "description": "Exposes a webhook HTTP server for receiving external messages and triggering agent tasks",
-    "author": "",
-    "license": "MIT",
-    "main": "dist/index.js",
     "configSchema": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
             "port": {
                 "type": "number",
@@ -30,35 +28,9 @@
             },
             "agentId": {
                 "type": "string",
-                "default": "default"
+                "default": "default",
+                "description": "Agent ID to delegate tasks to"
             }
-        },
-        "required": []
-    },
-    "configDefaults": {
-        "port": 8765,
-        "host": "0.0.0.0",
-        "authToken": "$auto:uuid",
-        "timeout": 300000,
-        "agentId": "default"
-    },
-    "uiHints": {
-        "authToken": {
-            "label": "Auth Token",
-            "sensitive": true,
-            "placeholder": "Auto-generated secure token"
-        },
-        "port": {
-            "label": "Server Port",
-            "placeholder": "8765"
-        },
-        "host": {
-            "label": "Bind Host",
-            "placeholder": "0.0.0.0"
-        },
-        "timeout": {
-            "label": "Task Timeout (ms)",
-            "placeholder": "300000"
         }
     }
 }

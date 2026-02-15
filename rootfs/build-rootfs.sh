@@ -19,7 +19,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_SRC="${SCRIPT_DIR}/../clawdbot-plugin-webhook-server"
 OUTPUT="${1:-clawdbot.ext4}"
-SIZE_MB=2048
+SIZE_MB=4096
 MOUNTPOINT="/tmp/rootfs-build"
 
 echo "=== Building OpenClaw MicroVM Rootfs ==="
@@ -114,8 +114,6 @@ echo "https://mirrors.aliyun.com/alpine/edge/community" >> /etc/apk/repositories
 apk update
 apk add --no-cache \
     openrc openssh bash curl shadow git \
-    python3 make g++ linux-headers \
-    cmake samurai \
     nodejs npm
 
 # Verify Node.js
@@ -173,11 +171,15 @@ fi
 echo "OpenClaw installed: $(openclaw --version 2>/dev/null || echo 'version check skipped')"
 
 # Install the WeChat webhook plugin from the locally copied directory
-# openclaw plugins install supports local paths for development/custom plugins
+# OpenClaw loads TypeScript source directly via jiti (same as official plugins
+# like @openclaw/voice-call), so no tsc build step is needed.
 echo "Installing webhook-server plugin from local source..."
 cd /tmp/clawdbot-plugin-webhook-server
-npm install --omit=dev
-npm run build
+
+# Install only runtime dependencies (axios, fastify)
+# --ignore-scripts: prevent any postinstall scripts from running
+npm install --omit=dev --ignore-scripts
+
 cd /
 openclaw plugins install /tmp/clawdbot-plugin-webhook-server
 
