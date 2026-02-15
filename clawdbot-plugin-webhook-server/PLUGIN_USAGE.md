@@ -1,8 +1,8 @@
-# Clawdbot WeChat Channel Plugin
+# OpenClaw WeChat Channel Plugin
 
-Connect your Clawdbot agent to WeChat Official Accounts.
+Connect your OpenClaw agent to WeChat Official Accounts.
 
-**This plugin is part of the Clawdbot WeChat Integration Suite.**
+**This plugin is part of the OpenClaw WeChat Integration Suite.**
 For full source code, issues, and bridge deployment guide, please visit our GitHub repository:
 👉 **[https://github.com/NannaOlympicBroadcast/clawdbot-wechat-plugin](https://github.com/NannaOlympicBroadcast/clawdbot-wechat-plugin)**
 
@@ -24,18 +24,18 @@ openclaw plugins install @haiyanfengli-llc/webhook-server
 
 ## ⚙️ Configuration
 
-You can configure the plugin via the GUI (Recommended) or by editing the `clawdbot.json` file directly.
+You can configure the plugin via the GUI (Recommended) or by editing the `openclaw.json` file directly.
 
 ### GUI Configuration (Recommended)
 
-1.  Navigate to your Clawdbot Dashboard: `http(s)://<gatewayurl>/config`
+1.  Navigate to your OpenClaw Dashboard: `http(s)://<gatewayurl>/config`
 2.  Scroll down the sidebar and click on **Plugins**.
 3.  Select the **All** tab.
 4.  Scroll down to the **WeChat** card to configure the settings.
 
 ### Manual Configuration
 
-Add the following configuration to your Clawdbot `clawdbot.json`:
+Add the following configuration to your OpenClaw `openclaw.json`:
 
 ```json
 {
@@ -63,16 +63,16 @@ This plugin requires the **WeChat Bridge** service to function.
 The bridge handles the communication with WeChat servers and forwards messages to this plugin.
 
 1.  **WeChat** sends message to **Bridge**.
-2.  **Bridge** forwards message to **Clawdbot Plugin**.
-3.  **Clawdbot Agent** processes message.
-4.  **Clawdbot Plugin** sends reply back to **Bridge**.
+2.  **Bridge** forwards message to **OpenClaw Plugin**.
+3.  **OpenClaw Agent** processes message.
+4.  **OpenClaw Plugin** sends reply back to **Bridge**.
 5.  **Bridge** sends reply to **WeChat**.
 
 Please refer to the [GitHub Repository](https://github.com/NannaOlympicBroadcast/clawdbot-wechat-plugin) for instructions on how to deploy the Bridge.
 
 ## 📋 Requirements
 
-*   Clawdbot v0.5.0 or later
+*   OpenClaw v0.5.0 or later
 *   Self-hosted WeChat Bridge
 *   WeChat Service Account (服务号) or verified Subscription Account (认证订阅号)
 

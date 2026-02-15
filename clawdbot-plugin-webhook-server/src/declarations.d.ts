@@ -1,4 +1,4 @@
-declare module 'clawdbot/plugin-sdk' {
+declare module 'openclaw/plugin-sdk' {
     export interface ClawdbotPluginApi {
         logger: {
             info: (msg: string, ...args: unknown[]) => void;

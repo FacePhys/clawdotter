@@ -5,13 +5,13 @@ import type {
     ClawdbotConfig,
     PluginRuntime,
     MarkdownTableMode
-} from 'clawdbot/plugin-sdk';
+} from 'openclaw/plugin-sdk';
 import {
     emptyPluginConfigSchema,
     buildChannelConfigSchema,
     normalizeAccountId,
     DEFAULT_ACCOUNT_ID
-} from 'clawdbot/plugin-sdk';
+} from 'openclaw/plugin-sdk';
 import axios from 'axios';
 import { IncomingMessage, ServerResponse } from 'http';
 import { setRuntime, getRuntime } from './runtime.js';
