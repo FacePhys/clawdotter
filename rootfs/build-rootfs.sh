@@ -86,8 +86,8 @@ fi
 # 4. Chroot and configure base system
 echo "[4/7] Configuring system..."
 cat > "$MOUNTPOINT/etc/resolv.conf" << 'EOF'
-nameserver 8.8.8.8
-nameserver 8.8.4.4
+nameserver 114.114.114.114
+nameserver 223.5.5.5
 EOF
 
 # Mount proc/sys for chroot
